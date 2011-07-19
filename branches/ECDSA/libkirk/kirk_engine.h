@@ -93,10 +93,10 @@ typedef struct
 #define KIRK_CMD_SHA1_HASH 11
 #define KIRK_CMD_ECDSA_GEN_KEYS 12
 #define KIRK_CMD_ECDSA_MULTIPLY_POINT 13
-#define KIRK_CMD_14 14
+#define KIRK_CMD_PRNG 14
 #define KIRK_CMD_15 15
-#define KIRK_CMD_ECDSA_SIGN_HASH 16
-#define KIRK_CMD_ECDSA_SIGN_CHECK 17
+#define KIRK_CMD_ECDSA_SIGN 16
+#define KIRK_CMD_ECDSA_VERIFY 17
 
 //"mode" in header
 #define KIRK_MODE_CMD1 1
@@ -145,8 +145,14 @@ int kirk_CMD4(u8* outbuff, u8* inbuff, int size);
 int kirk_CMD7(u8* outbuff, u8* inbuff, int size);
 int kirk_CMD10(u8* inbuff, int insize);
 int kirk_CMD11(u8* outbuff, u8* inbuff, int size);
-int kirk_CMD14(u8* outbuff, int size);
+int kirk_CMD12(u8* outbuff, int outsize);
+int kirk_CMD13(u8* outbuff, int outsize,u8* inbuff, int insize);
+int kirk_CMD14(u8* outbuff, int outsize);
+int kirk_CMD16(u8* outbuff, int outsize,u8* inbuff, int insize);
+int kirk_CMD17(u8* inbuff, int insize);
+
 int kirk_init(); //CMD 0xF?
+int kirk_init2(u8 *, u32, u32, u32);
 
 //helper funcs
 u8* kirk_4_7_get_key(int key_type);
@@ -158,4 +164,28 @@ int kirk_CMD1_ex(u8* outbuff, u8* inbuff, int size, KIRK_CMD1_HEADER* header);
 int sceUtilsSetFuseID(u8*fuse);
 int sceUtilsBufferCopyWithRange(u8* outbuff, int outsize, u8* inbuff, int insize, int cmd);
 
+
+// Prototypes for the Elliptic Curve and Big Number functions
+int ecdsa_get_params(u32 type, u8 *p, u8 *a, u8 *b, u8 *N, u8 *Gx, u8 *Gy);
+int ecdsa_set_curve(void);
+void ecdsa_set_pub(u8 *Q);
+void ecdsa_set_priv(u8 *k);
+int ecdsa_verify(u8 *hash, u8 *R, u8 *S);
+void ecdsa_sign(u8 *hash, u8 *R, u8 *S);
+void ec_priv_to_pub(u8 *k, u8 *Q);
+void ec_pub_mult(u8 *k, u8 *Q);
+void bn_copy(u8 *d, u8 *a, u32 n);
+int bn_compare(u8 *a, u8 *b, u32 n);
+void bn_reduce(u8 *d, u8 *N, u32 n);
+void bn_add(u8 *d, u8 *a, u8 *b, u8 *N, u32 n);
+void bn_sub(u8 *d, u8 *a, u8 *b, u8 *N, u32 n);
+void bn_to_mon(u8 *d, u8 *N, u32 n);
+void bn_from_mon(u8 *d, u8 *N, u32 n);
+void bn_mon_mul(u8 *d, u8 *a, u8 *b, u8 *N, u32 n);
+void bn_mon_inv(u8 *d, u8 *a, u8 *N, u32 n);
+void hex_dump(char *str, u8 *buf, int size);
+
+#define		round_up(x,n)	(-(-(x) & -(n)))
+
+#define		array_size(x)	(sizeof(x) / sizeof(*(x)))
 #endif
