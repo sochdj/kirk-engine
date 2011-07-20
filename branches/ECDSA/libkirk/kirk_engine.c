@@ -56,10 +56,18 @@ u8 kirk7_key5D[] = {0x11, 0x5A, 0x5D, 0x20, 0xD5, 0x3A, 0x8D, 0xD3, 0x9C, 0xC5, 
 u8 kirk7_key63[] = {0x9C, 0x9B, 0x13, 0x72, 0xF8, 0xC6, 0x40, 0xCF, 0x1C, 0x62, 0xF5, 0xD5, 0x92, 0xDD, 0xB5, 0x82};
 u8 kirk7_key64[] = {0x03, 0xB3, 0x02, 0xE8, 0x5F, 0xF3, 0x81, 0xB1, 0x3B, 0x8D, 0xAA, 0x2A, 0x90, 0xFF, 0x5E, 0x61};
 
+u8 kirk16_key[]  = {0x47, 0x5E, 0x09, 0xF4, 0xA2, 0x37, 0xDA, 0x9B, 0xEF, 0xFF, 0x3B, 0xC0, 0x77, 0x14, 0x3D, 0x8A};
+
+
 /* ------------------------- KEY VAULT END ------------------------- */
 
 /* ------------------------- INTERNAL STUFF ------------------------- */
-
+typedef struct blah
+{
+  u8 fuseid[8]; //0
+  u8 mesh[0x40];  //0x8
+} kirk16_data; //0x48
+ 
 typedef struct header_keys
 {
   u8 AES[16];
@@ -241,13 +249,14 @@ int kirk_CMD11(u8* outbuff, u8* inbuff, int size)
 // offset 0x14 = public key point (0x28 len)
 int kirk_CMD12(u8 * outbuff, int outsize) {
   u8 k[0x15];
-  
+  KIRK_CMD12_BUFFER * keypair = (KIRK_CMD12_BUFFER *) outbuff;
+
   if(outsize != 0x3C) return KIRK_INVALID_SIZE;
   
   k[0] = 0;
   kirk_CMD14(k+1,0x14);
-  ec_priv_to_pub(k, outbuff+0x14);
-  memcpy(outbuff,k+1,0x14);
+  ec_priv_to_pub(k, (u8*)keypair->public_key.x);
+  memcpy(keypair->private_key,k+1,0x14);
   
   return KIRK_OPERATION_SUCCESS;
 }
@@ -256,11 +265,12 @@ int kirk_CMD12(u8 * outbuff, int outsize) {
 // offset 0x14 = point to multiply (0x28 len)
 int kirk_CMD13(u8 * outbuff, int outsize,u8 * inbuff, int insize) {
   u8 k[0x15];
+  KIRK_CMD13_BUFFER * pointmult = (KIRK_CMD13_BUFFER *) inbuff;
   k[0]=0;
   if(outsize != 0x28) return KIRK_INVALID_SIZE;
   if(insize != 0x3C) return KIRK_INVALID_SIZE;
-  ecdsa_set_pub(inbuff+0x14);
-  memcpy(k+1,inbuff,0x14);
+  ecdsa_set_pub((u8*)pointmult->public_key.x);
+  memcpy(k+1,pointmult->multiplier,0x14);
   ec_pub_mult(k, outbuff);
   return KIRK_OPERATION_SUCCESS;
 }
@@ -274,7 +284,7 @@ int kirk_CMD14(u8 * outbuff, int outsize) {
   u32 curtime;
   //if(outsize != 0x14) return KIRK_INVALID_SIZE; // Need real error code
   if(outsize <=0) return KIRK_OPERATION_SUCCESS;
-  	
+    
   memcpy(temp+4, PRNG_DATA,0x14);
   // This uses the standard C time function for portability.
   curtime=time(0);
@@ -310,7 +320,154 @@ int kirk_CMD14(u8 * outbuff, int outsize) {
   return KIRK_OPERATION_SUCCESS;
 }
 
-int kirk_CMD16(u8 * outbuf, int outsize, u8 * inbuff, int insize) {
+void decrypt_kirk16_private(u8 *dA_out, u8 *dA_enc)
+{
+  int i, k;
+  kirk16_data keydata;
+  u8 subkey_1[0x10], subkey_2[0x10];
+  rijndael_ctx aes_ctx;
+
+  keydata.fuseid[7] = g_fuse90 &0xFF;
+  keydata.fuseid[6] = (g_fuse90>>8) &0xFF;
+  keydata.fuseid[5] = (g_fuse90>>16) &0xFF;
+  keydata.fuseid[4] = (g_fuse90>>24) &0xFF; 
+  keydata.fuseid[3] = g_fuse94 &0xFF;
+  keydata.fuseid[2] = (g_fuse94>>8) &0xFF;
+  keydata.fuseid[1] = (g_fuse94>>16) &0xFF;
+  keydata.fuseid[0] = (g_fuse94>>24) &0xFF;
+ 
+  /* set encryption key */
+  rijndael_set_key(&aes_ctx, kirk16_key, 128);
+ 
+  /* set the subkeys */
+  for (i = 0; i < 0x10; i++)
+  {
+    /* set to the fuseid */
+    subkey_2[i] = subkey_1[i] = keydata.fuseid[i % 8];
+  }
+ 
+  /* do aes crypto */
+  for (i = 0; i < 3; i++)
+  {
+    /* encrypt + decrypt */
+    rijndael_encrypt(&aes_ctx, subkey_1, subkey_1);
+    rijndael_decrypt(&aes_ctx, subkey_2, subkey_2);
+  }
+ 
+  /* set new key */
+  rijndael_set_key(&aes_ctx, subkey_1, 128);
+ 
+  /* now lets make the key mesh */
+  for (i = 0; i < 3; i++)
+  {
+    /* do encryption in group of 3 */
+    for (k = 0; k < 3; k++)
+    {
+      /* crypto */
+      rijndael_encrypt(&aes_ctx, subkey_2, subkey_2);
+    }
+ 
+    /* copy to out block */
+    memcpy(&keydata.mesh[i * 0x10], subkey_2, 0x10);
+  }
+ 
+  /* set the key to the mesh */
+  rijndael_set_key(&aes_ctx, &keydata.mesh[0x20], 128);
+ 
+  /* do the encryption routines for the aes key */
+  for (i = 0; i < 2; i++)
+  {
+    /* encrypt the data */
+    rijndael_encrypt(&aes_ctx, &keydata.mesh[0x10], &keydata.mesh[0x10]);
+  }
+ 
+  /* set the key to that mesh shit */
+  rijndael_set_key(&aes_ctx, &keydata.mesh[0x10], 128);
+ 
+  /* cbc decrypt the dA */
+  AES_cbc_decrypt((AES_ctx *)&aes_ctx, dA_enc, dA_out, 0x20);
+}
+ 
+void encrypt_kirk16_private(u8 *dA_out, u8 *dA_dec)
+{
+  int i, k;
+  kirk16_data keydata;
+  u8 subkey_1[0x10], subkey_2[0x10];
+  rijndael_ctx aes_ctx;
+ 
+
+  keydata.fuseid[7] = g_fuse90 &0xFF;
+  keydata.fuseid[6] = (g_fuse90>>8) &0xFF;
+  keydata.fuseid[5] = (g_fuse90>>16) &0xFF;
+  keydata.fuseid[4] = (g_fuse90>>24) &0xFF; 
+  keydata.fuseid[3] = g_fuse94 &0xFF;
+  keydata.fuseid[2] = (g_fuse94>>8) &0xFF;
+  keydata.fuseid[1] = (g_fuse94>>16) &0xFF;
+  keydata.fuseid[0] = (g_fuse94>>24) &0xFF;
+  /* set encryption key */
+  rijndael_set_key(&aes_ctx, kirk16_key, 128);
+ 
+  /* set the subkeys */
+  for (i = 0; i < 0x10; i++)
+  {
+    /* set to the fuseid */
+    subkey_2[i] = subkey_1[i] = keydata.fuseid[i % 8];
+  }
+ 
+  /* do aes crypto */
+  for (i = 0; i < 3; i++)
+  {
+    /* encrypt + decrypt */
+    rijndael_encrypt(&aes_ctx, subkey_1, subkey_1);
+    rijndael_decrypt(&aes_ctx, subkey_2, subkey_2);
+  }
+ 
+  /* set new key */
+  rijndael_set_key(&aes_ctx, subkey_1, 128);
+ 
+  /* now lets make the key mesh */
+  for (i = 0; i < 3; i++)
+  {
+    /* do encryption in group of 3 */
+    for (k = 0; k < 3; k++)
+    {
+      /* crypto */
+      rijndael_encrypt(&aes_ctx, subkey_2, subkey_2);
+    }
+ 
+    /* copy to out block */
+    memcpy(&keydata.mesh[i * 0x10], subkey_2, 0x10);
+  }
+ 
+  /* set the key to the mesh */
+  rijndael_set_key(&aes_ctx, &keydata.mesh[0x20], 128);
+ 
+  /* do the encryption routines for the aes key */
+  for (i = 0; i < 2; i++)
+  {
+    /* encrypt the data */
+    rijndael_encrypt(&aes_ctx, &keydata.mesh[0x10], &keydata.mesh[0x10]);
+  }
+ 
+  /* set the key to that mesh shit */
+  rijndael_set_key(&aes_ctx, &keydata.mesh[0x10], 128);
+ 
+  /* cbc encrypt the dA */
+  AES_cbc_encrypt((AES_ctx *)&aes_ctx, dA_dec, dA_out, 0x20);
+}
+
+int kirk_CMD16(u8 * outbuff, int outsize, u8 * inbuff, int insize) {
+	u8 dec_private[0x20];
+	KIRK_CMD16_BUFFER * signbuf = (KIRK_CMD16_BUFFER *) inbuff;
+	ECDSA_SIG * sig = (ECDSA_SIG *) outbuff;
+	if(insize != 0x34) return KIRK_INVALID_SIZE;
+	if(outsize != 0x28) return KIRK_INVALID_SIZE;
+	decrypt_kirk16_private(dec_private,signbuf->enc_private);
+	// Clear out the padding for safety
+	memset(&dec_private[0x14], 0, 0xC);
+	
+	ecdsa_set_priv(dec_private);
+	ecdsa_sign(signbuf->message_hash,sig->r, sig->s);
   return KIRK_OPERATION_SUCCESS;
 }
 
@@ -321,22 +478,16 @@ int kirk_CMD16(u8 * outbuf, int outsize, u8 * inbuff, int insize) {
 // 3C = signature R (0x14 length)
 // 50 = signature S (0x14 length)
 int kirk_CMD17(u8 * inbuff, int insize) {
-
+	KIRK_CMD17_BUFFER * sig = (KIRK_CMD17_BUFFER *) inbuff;
   if(insize != 0x64) return KIRK_INVALID_SIZE;
-  ecdsa_set_pub(inbuff);
+  ecdsa_set_pub(sig->public_key.x);
   // ecdsa_verify(u8 *hash, u8 *R, u8 *S)
-  if(ecdsa_verify(inbuff+0x28,inbuff+0x3C,inbuff+0x50)) {
+  if(ecdsa_verify(sig->message_hash,sig->signature.r,sig->signature.s)) {
     return KIRK_OPERATION_SUCCESS;
   } else {
     return KIRK_SIG_CHECK_INVALID;
   }
 }
-typedef struct
-{
-  u8 fuseid[8]; //0
-  u8 mesh[0x40];  //0x8
-} keygen_data; //0x48
-
 
 
 
